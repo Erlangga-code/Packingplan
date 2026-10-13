@@ -144,7 +144,7 @@ def save_actuals(engine, plan_date: str, shift: int, rows: list[dict], user: str
     Baris yang kosong semua = hapus data actual item itu."""
     up, rm = [], []
     for r in rows:
-        qa, rs, nt = r.get("qty_actual"), (r.get("reason") or None), ((r.get("note") or "").strip() or None)
+        qa, rs, nt = r.get("qty_actual"), (r.get("reason") or None), ((r.get("note") or "").strip().upper() or None)
         base = {"k": r["item_key"], "d": plan_date, "s": int(shift)}
         if qa is None and rs is None and nt is None:
             rm.append(base)
