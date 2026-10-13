@@ -9,16 +9,8 @@ DEFAULT_SHEET = "ASSY"
 # Baris yang nama part-nya mengandung frasa ini TIDAK ikut (itu planning assy stay)
 DEFAULT_EXCLUDE = ["sub assy stay", "stay mirror"]
 
-# Pilihan alasan (dropdown). Bebas diubah/ditambah.
-REASONS = [
-    "Material / part kurang",
-    "WIP belum ada (proses sebelumnya)",
-    "Mesin / jig bermasalah",
-    "Manpower kurang",
-    "Prioritas diganti (item lain didahulukan)",
-    "Part tidak terpakai / di-drop",
-    "Lainnya (isi keterangan)",
-]
+# Pilihan alasan (dropdown): 4M
+REASONS = ["MAN", "METHODE", "MACHINE", "MATERIAL"]
 
-# Alasan yang berarti sisa shift 1 TIDAK perlu dikejar di shift 2
-DROP_REASONS = {"Part tidak terpakai / di-drop"}
+# Alasan yang berarti sisa shift 1 TIDAK perlu dikejar di shift 2 (kosong = semua kekurangan dikejar)
+DROP_REASONS = set()
