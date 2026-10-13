@@ -136,8 +136,8 @@ def page_input(engine):
         st.success("Semua item sudah terisi. Pilih 'Semua' untuk melihat atau mengubah.") if not q.strip() and show == "Belum diisi" \
             else st.info("Tidak ada item yang cocok.")
         return
-    st.caption("Pilih SESUAI kalau hasil sama dengan plan. Kalau kurang, pilih penyebab 4M lalu isi Actual. "
-               "Tekan Simpan sebelum mengganti pencarian atau tanggal.")
+    st.caption("Centang Sesuai plan kalau hasil sama dengan plan. Kalau kurang, pilih penyebab 4M, isi Actual, "
+               "dan jelaskan di Ket. 4M. Tekan Simpan sebelum mengganti pencarian atau tanggal.")
 
     reasons = list(config.REASONS)
     fields = {}
@@ -160,37 +160,42 @@ def page_input(engine):
                     with st.container(border=True):
                         st.markdown(ui.item_head(r["part_name"], r["remarks"], plan, ui.status_html(plan, sa)),
                                     unsafe_allow_html=True)
-                        sel = st.segmented_control("Status", [SESUAI] + reasons, default=sel0,
-                                                   key=_wkey("sel", sid, ver, ik), label_visibility="collapsed")
-                        a, n = st.columns([2, 3])
-                        v = a.number_input("Actual", min_value=0, step=1, value=sa if sa is not None and sa != plan else None,
-                                           placeholder="Actual (kalau beda)", key=_wkey("act", sid, ver, ik),
-                                           label_visibility="collapsed")
-                        note = n.text_input("Keterangan", value=clean(r["note"]) or "", placeholder="Keterangan (opsional)",
-                                            key=_wkey("note", sid, ver, ik), label_visibility="collapsed")
-                    fields[ik] = (r["part_name"], plan, sa, rs0, clean(r["note"]), sel, v, note)
+                        ok = st.checkbox("✓ Sesuai plan", value=(sel0 == SESUAI), key=_wkey("ok", sid, ver, ik))
+                        st.caption("Kurang dari plan? Pilih penyebab 4M, lalu isi Actual:")
+                        r4 = st.segmented_control("Penyebab 4M", reasons, default=rs0, key=_wkey("m4", sid, ver, ik),
+                                                  label_visibility="collapsed")
+                        v = st.number_input("Actual", min_value=0, step=1, value=sa if sa is not None and sa != plan else None,
+                                            placeholder="Actual (kalau beda dari plan)", key=_wkey("act", sid, ver, ik),
+                                            label_visibility="collapsed")
+                        note = st.text_input("Ket. 4M", value=clean(r["note"]) or "",
+                                             placeholder="Ket. 4M: jelaskan penyebabnya", key=_wkey("note", sid, ver, ik),
+                                             label_visibility="collapsed")
+                    fields[ik] = (r["part_name"], plan, sa, rs0, clean(r["note"]), ok, r4, v, note)
         bottom_submit = st.form_submit_button("Simpan semua", type="primary", key=f"s2_{sid}_{ver}", width="stretch")
 
     if top_submit or bottom_submit:
         errors, out = [], []
-        for ik, (part, plan, sa, rs0, note0, sel, v, note) in fields.items():
+        for ik, (part, plan, sa, rs0, note0, ok, r4, v, note) in fields.items():
             v = None if v is None else int(v)
             note = (clean(note) or "")
             note = note.upper() if note else None
             qa, rs = None, None
-            if sel == SESUAI:
+            if ok and r4:
+                errors.append(f"{part}: pilih salah satu, Sesuai plan atau penyebab 4M.")
+                continue
+            if ok:
                 if v is not None and v < plan:
-                    errors.append(f"{part}: Actual {idn_(v)} lebih kecil dari plan, pilih penyebab 4M atau kosongkan Actual.")
+                    errors.append(f"{part}: Actual {idn_(v)} lebih kecil dari plan, hilangkan centang Sesuai plan dan pilih 4M.")
                     continue
                 qa = v if v is not None else plan
-            elif sel in reasons:
+            elif r4:
                 if v is None:
                     errors.append(f"{part}: isi Actual (kurang dari {idn_(plan)}).")
                     continue
                 if v >= plan:
                     errors.append(f"{part}: penyebab 4M dipilih tapi Actual {idn_(v)} tidak kurang dari plan.")
                     continue
-                qa, rs = v, sel
+                qa, rs = v, r4
             elif v is not None:
                 if v < plan:
                     errors.append(f"{part}: Actual {idn_(v)} < plan {idn_(plan)}, pilih penyebab 4M.")
@@ -261,7 +266,7 @@ def page_recap(engine):
                 f'<div class="row-s2">plan S1</div></div></div>' for _, r in belum.iterrows()), unsafe_allow_html=True)
     with t3:
         names = {"customer": "Customer", "part_name": "Part", "remarks": "Remarks", "plan_s1": "Plan S1",
-                 "actual_s1": "Actual S1", "sisa_s1": "Sisa S1", "alasan_s1": "Alasan S1", "ket_s1": "Keterangan S1",
+                 "actual_s1": "Actual S1", "sisa_s1": "Sisa S1", "alasan_s1": "Alasan S1", "ket_s1": "Ket. 4M S1",
                  "plan_s2": "Plan S2", "dikejar_s2": "Dikejar di S2", "target_s2": "Target S2", "status": "Status"}
         show = rec.rename(columns=names)
 
