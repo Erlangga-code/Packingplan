@@ -66,7 +66,7 @@ def summary(rec: pd.DataFrame) -> dict:
 
 def to_excel(rec: pd.DataFrame) -> bytes:
     names = {"customer": "Customer", "part_name": "Part", "remarks": "Remarks", "plan_s1": "Plan S1",
-             "actual_s1": "Actual S1", "sisa_s1": "Sisa S1", "alasan_s1": "Alasan S1", "ket_s1": "Keterangan S1",
+             "actual_s1": "Actual S1", "sisa_s1": "Sisa S1", "alasan_s1": "Alasan S1", "ket_s1": "Ket. 4M S1",
              "plan_s2": "Plan S2", "dikejar_s2": "Dikejar di S2", "target_s2": "Target S2", "status": "Status"}
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as xw:
