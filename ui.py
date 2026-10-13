@@ -15,8 +15,8 @@ CSS = """
 @import url('https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600&family=Barlow+Semi+Condensed:wght@500;600;700&display=swap');
 :root{--ink:#1C2B39;--line:#D5DBE3;--mute:#5F6F7F;--ok:#1E9E6A;--ok-bg:#E3F5EC;--wait:#C98200;--wait-bg:#FFF1CC;--bad:#D64040;--bad-bg:#FDE7E7;--steel:#2B5C9E}
 .stApp, .stApp p, .stApp label, .stApp input, .stApp textarea, .stApp button{font-family:'Barlow',system-ui,sans-serif !important}
-.block-container{padding-top:1.1rem;max-width:1080px !important;margin:0 auto}
-@media (max-width:640px){.block-container{padding:.7rem .6rem 3rem}}
+.block-container{padding-top:4.4rem !important;max-width:1080px !important;margin:0 auto}
+@media (max-width:640px){.block-container{padding:4rem .6rem 3rem !important}}
 .hdr{background:var(--ink);color:#fff;padding:14px 18px 12px;border-radius:10px 10px 0 0;display:flex;justify-content:space-between;align-items:flex-end;gap:6px 16px;flex-wrap:wrap}
 .hdr-t{font:700 28px/1.05 'Barlow Semi Condensed',sans-serif}
 .hdr-s{font:500 15px 'Barlow',sans-serif;color:#B9C6D3}
