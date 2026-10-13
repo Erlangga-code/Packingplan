@@ -135,8 +135,8 @@ def page_input(engine):
             "✓ Sesuai plan": st.column_config.CheckboxColumn(help="Centang = actual sama dengan plan"),
             "Actual": st.column_config.NumberColumn(min_value=0, step=1, format="%d",
                                                     help="Isi kalau berbeda dari plan"),
-            "Alasan": st.column_config.SelectboxColumn(options=reasons, help="Wajib kalau actual < plan"),
-            "Keterangan": st.column_config.TextColumn(max_chars=200),
+            "Alasan": st.column_config.SelectboxColumn(options=reasons, help="Pilih 4M penyebab kalau actual < plan"),
+            "Keterangan": st.column_config.TextColumn(max_chars=200, help="Otomatis jadi HURUF KAPITAL setelah disimpan"),
         })
 
     if st.button("💾 Simpan", type="primary"):
@@ -200,8 +200,8 @@ def page_recap(engine):
     num = ["Plan S1", "Actual S1", "Sisa S1", "Plan S2", "Dikejar di S2", "Target S2"]
     st.dataframe(show.style.apply(color, axis=1).format({c: "{:,.0f}" for c in num}, na_rep="-"),
                  hide_index=True, height=min(760, 40 + 35 * max(len(show), 3)))
-    st.caption("Target S2 = Plan S2 + sisa S1 yang masih harus dikejar. Sisa tidak dikejar kalau alasannya "
-               "'Part tidak terpakai / di-drop'. Item yang kurang tapi belum ada di plan S2 ditandai merah.")
+    st.caption("Target S2 = Plan S2 + sisa S1 (semua kekurangan dikejar). Baca kolom Alasan (4M) dan Keterangan "
+               "untuk memutuskan mana yang benar-benar perlu dikejar. Item yang kurang tapi belum ada di plan S2 ditandai merah.")
     st.download_button("⬇️ Unduh Excel", recap.to_excel(rec), file_name=f"rekap_{d}.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
