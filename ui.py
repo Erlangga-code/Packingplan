@@ -67,6 +67,14 @@ CSS = """
 .m4 .track{height:14px;background:#DCE2E9;border-radius:7px;overflow:hidden}
 .m4 .track span{display:block;height:100%;background:var(--bad)}
 .m4 .v{text-align:right;color:var(--mute)}
+.pbadge{font:700 12px 'Barlow',sans-serif;padding:2px 10px;border-radius:999px;background:#6A2FB5;color:#fff}
+.pcall{background:#6A2FB5;color:#fff;border-radius:10px;padding:11px 16px;margin:6px 0 10px;display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap}
+.pcall-t{font:700 18px/1.15 'Barlow Semi Condensed',sans-serif}
+.pcall-s{font:500 14px 'Barlow',sans-serif;color:#E6D9F8;margin-top:2px}
+.pcall-n{font:700 30px/1 'Barlow Semi Condensed',sans-serif;color:#FFD84D;text-align:right}
+.pcall-n small{display:block;font:500 12px 'Barlow',sans-serif;color:#E6D9F8}
+[class*="st-key-prio_"]{border-left:8px solid #6A2FB5 !important;border-color:#CDB6EE #CDB6EE #CDB6EE #6A2FB5 !important;background:#F5EFFD !important}
+.row.prio{border-left-color:#6A2FB5;background:#F5EFFD}
 .empty{background:#fff;border:1px dashed var(--line);border-radius:10px;padding:16px;color:var(--mute);font:500 15px 'Barlow',sans-serif}
 </style>
 """
@@ -106,8 +114,9 @@ def board(ok: int, bad: int, wait: int):
         f'<span class="bad" style="width:{bad / total * 100:.1f}%"></span></div>', unsafe_allow_html=True)
 
 
-def item_head(part, remarks, plan, status_html):
-    chips = f'<span class="chip warn">{esc(remarks)}</span>' if remarks else ""
+def item_head(part, remarks, plan, status_html, prio=False):
+    chips = ('<span class="pbadge">PRIORITAS</span>' if prio else "") + \
+            (f'<span class="chip warn">{esc(remarks)}</span>' if remarks else "")
     return ('<div class="it"><div>'
             f'<div class="it-part">{esc(part)}</div>'
             f'<div class="it-meta">{status_html}{chips}</div></div>'
@@ -143,10 +152,11 @@ def shortfall_row(r) -> str:
     chip = f'<span class="chip">{esc(r["alasan_s1"])}</span>' if r["alasan_s1"] else ""
     note = f'<div class="row-n">{esc(r["ket_s1"])}</div>' if r["ket_s1"] else ""
     new = '<span class="chip warn">belum ada plan S2</span>' if r["plan_s2"] == 0 else ""
-    return (f'<div class="row{" add" if r["plan_s2"] == 0 else ""}"><div class="row-l">'
+    pb = '<span class="pbadge">PRIORITAS</span>' if r.get("prioritas") else ""
+    return (f'<div class="row{" add" if r["plan_s2"] == 0 else ""}{" prio" if r.get("prioritas") else ""}"><div class="row-l">'
             f'<div class="row-p">{esc(r["part_name"])}</div>'
             f'<div class="row-c">{esc(r["customer"]) or "(tanpa customer)"}</div>'
-            f'<div class="it-meta" style="margin-top:6px">{chip}{new}</div>{note}</div>'
+            f'<div class="it-meta" style="margin-top:6px">{pb}{chip}{new}</div>{note}</div>'
             f'<div class="row-r"><div class="row-big">-{idn(r["dikejar_s2"])}</div>'
             f'<div class="row-s2">S2: {idn(r["plan_s2"])} &rarr; {idn(r["target_s2"])}</div></div></div>')
 
@@ -159,3 +169,9 @@ def m4_bars(df: pd.DataFrame, order: list[str]) -> str:
     rows = "".join(f'<div class="m4"><div>{esc(k)}</div><div class="track"><span style="width:{g.loc[k, "pcs"] / mx * 100:.1f}%"></span></div>'
                    f'<div class="v">{idn(g.loc[k, "pcs"])} pcs ({g.loc[k, "n"]} item)</div></div>' for k in keys)
     return rows
+
+
+def prio_callout(total: int, done: int, title: str = "Item PRIORITAS: tidak boleh di-skip", sub: str = ""):
+    sub_html = f'<div class="pcall-s">{esc(sub)}</div>' if sub else ""
+    st.markdown(f'<div class="pcall"><div><div class="pcall-t">{esc(title)}</div>{sub_html}</div>'
+                f'<div class="pcall-n">{done}/{total}<small>sudah diisi</small></div></div>', unsafe_allow_html=True)
