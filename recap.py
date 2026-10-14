@@ -8,7 +8,7 @@ import pandas as pd
 
 from config import DROP_REASONS
 
-COLS = ["customer", "part_name", "remarks", "plan_s1", "actual_s1", "sisa_s1", "alasan_s1", "ket_s1",
+COLS = ["customer", "part_name", "remarks", "prioritas", "plan_s1", "actual_s1", "sisa_s1", "alasan_s1", "ket_s1",
         "plan_s2", "dikejar_s2", "target_s2", "status"]
 
 
@@ -25,6 +25,9 @@ def build_recap(day: pd.DataFrame) -> pd.DataFrame:
     out["alasan_s1"] = s1["reason"].reindex(out.index)
     out["ket_s1"] = s1["note"].reindex(out.index)
     out["plan_s2"] = s2["qty_plan"].reindex(out.index).fillna(0).astype(int)
+    p1 = s1["is_priority"].reindex(out.index).fillna(0).astype(int) if "is_priority" in s1 else 0
+    p2 = s2["is_priority"].reindex(out.index).fillna(0).astype(int) if "is_priority" in s2 else 0
+    out["prioritas"] = (p1 + p2) > 0
 
     filled = out["actual_s1"].notna()
     out["sisa_s1"] = np.where(out["plan_s1"] > 0, np.where(filled, out["plan_s1"] - out["actual_s1"], np.nan), np.nan)
@@ -52,7 +55,10 @@ def build_recap(day: pd.DataFrame) -> pd.DataFrame:
 
 def summary(rec: pd.DataFrame) -> dict:
     s1 = rec[rec["plan_s1"] > 0]
+    pr = rec[rec["prioritas"].astype(bool)]
     return {
+        "prio_items": len(pr),
+        "prio_masalah": int(((pr["dikejar_s2"] > 0) | (pr["status"] == "S1 belum diisi")).sum()),
         "items_s1": len(s1),
         "belum_diisi": int((s1["actual_s1"].isna()).sum()),
         "kurang": int((rec["dikejar_s2"] > 0).sum()),
@@ -65,14 +71,16 @@ def summary(rec: pd.DataFrame) -> dict:
 
 
 def to_excel(rec: pd.DataFrame) -> bytes:
-    names = {"customer": "Customer", "part_name": "Part", "remarks": "Remarks", "plan_s1": "Plan S1",
+    names = {"customer": "Customer", "part_name": "Part", "remarks": "Remarks", "prioritas": "Prioritas", "plan_s1": "Plan S1",
              "actual_s1": "Actual S1", "sisa_s1": "Sisa S1", "alasan_s1": "Alasan S1", "ket_s1": "Ket. 4M S1",
              "plan_s2": "Plan S2", "dikejar_s2": "Dikejar di S2", "target_s2": "Target S2", "status": "Status"}
     buf = io.BytesIO()
     with pd.ExcelWriter(buf, engine="openpyxl") as xw:
-        rec.rename(columns=names).to_excel(xw, index=False, sheet_name="Rekap")
+        out = rec.copy()
+        out["prioritas"] = out["prioritas"].map({True: "YA", False: ""})
+        out.rename(columns=names).to_excel(xw, index=False, sheet_name="Rekap")
         ws = xw.sheets["Rekap"]
-        for col, w in zip("ABCDEFGHIJKL", (30, 36, 24, 10, 10, 10, 32, 28, 10, 13, 11, 28)):
+        for col, w in zip("ABCDEFGHIJKLM", (30, 36, 24, 10, 10, 10, 10, 32, 28, 10, 13, 11, 28)):
             ws.column_dimensions[col].width = w
-        ws.freeze_panes = "D2"
+        ws.freeze_panes = "E2"
     return buf.getvalue()
