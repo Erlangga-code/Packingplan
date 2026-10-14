@@ -52,9 +52,14 @@ def clean(v):
 @st.cache_resource
 def get_engine():
     url = secret("DATABASE_URL") or "sqlite:///planning.db"
-    engine = db.make_engine(url)
-    db.init_db(engine)
-    return engine, url.startswith("sqlite")
+    return db.make_engine(url), url.startswith("sqlite")
+
+
+@st.cache_resource
+def ensure_schema(_engine, version: str):
+    """Buat tabel yang belum ada. Dijalankan ulang otomatis saat daftar tabel (SCHEMA_VERSION) berubah."""
+    db.init_db(_engine)
+    return version
 
 
 # ------------------------------------------------------------------ login
@@ -457,6 +462,7 @@ def main():
         login_view()
         return
     engine, is_sqlite = get_engine()
+    ensure_schema(engine, db.SCHEMA_VERSION)
     role = st.session_state["role"]
 
     with st.sidebar:
