@@ -6,6 +6,7 @@ kunci utama berupa teks (tanpa autoincrement), upsert pakai ON CONFLICT.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 
 import pandas as pd
 from sqlalchemy import create_engine, text
@@ -29,6 +30,10 @@ SCHEMA = [
         upload_id TEXT PRIMARY KEY, filename TEXT, period_text TEXT, uploaded_by TEXT,
         uploaded_at TEXT, n_items INTEGER, n_plan_rows INTEGER, date_from TEXT, date_to TEXT)""",
 ]
+
+
+# berubah otomatis kalau daftar tabel di SCHEMA berubah, supaya app membuat tabel baru tanpa restart manual
+SCHEMA_VERSION = hashlib.md5("".join(SCHEMA).encode()).hexdigest()[:8]
 
 
 def make_engine(url: str):
