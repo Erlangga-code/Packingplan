@@ -82,11 +82,32 @@ def login_view():
 
 
 # ------------------------------------------------------------------ halaman: input actual
-SESUAI = "SESUAI"
-
-
 def _wkey(prefix, sid, ver, item_key):
     return f"{prefix}_{sid}_{ver}_{hashlib.md5(item_key.encode()).hexdigest()[:10]}"
+
+
+def idn_(n):
+    return ui.idn(n)
+
+
+def _render_item(r, sid, ver, reasons, fields, prio=False):
+    """Satu kartu item: Sesuai plan, penyebab 4M, Actual, Ket. 4M. Item prioritas berwarna ungu."""
+    ik, plan = r["item_key"], int(r["qty_plan"])
+    sa = None if pd.isna(r["qty_actual"]) else int(r["qty_actual"])
+    rs0 = r["reason"] if isinstance(r["reason"], str) and r["reason"] in reasons else None
+    box = st.container(border=True, key=_wkey("prio", sid, ver, ik)) if prio else st.container(border=True)
+    with box:
+        st.markdown(ui.item_head(r["part_name"], r["remarks"], plan, ui.status_html(plan, sa), prio), unsafe_allow_html=True)
+        ok = st.checkbox("✓ Sesuai plan", value=(rs0 is None and sa is not None and sa == plan), key=_wkey("ok", sid, ver, ik))
+        st.caption("Kurang dari plan? Pilih penyebab 4M, lalu isi Actual:")
+        r4 = st.segmented_control("Penyebab 4M", reasons, default=rs0, key=_wkey("m4", sid, ver, ik),
+                                  label_visibility="collapsed")
+        v = st.number_input("Actual", min_value=0, step=1, value=sa if sa is not None and sa != plan else None,
+                            placeholder="Actual (kalau beda dari plan)", key=_wkey("act", sid, ver, ik),
+                            label_visibility="collapsed")
+        note = st.text_input("Ket. 4M", value=clean(r["note"]) or "", placeholder="Ket. 4M: jelaskan penyebabnya",
+                             key=_wkey("note", sid, ver, ik), label_visibility="collapsed")
+    fields[ik] = (r["part_name"], plan, sa, rs0, clean(r["note"]), ok, r4, v, note)
 
 
 def page_input(engine):
@@ -117,12 +138,17 @@ def page_input(engine):
     n_kurang = int((act < df_all["qty_plan"]).sum())
     n_ok = len(df_all) - n_belum - n_kurang
     ui.board(n_ok, n_kurang, n_belum)
+    prio_all = df_all[df_all["is_priority"] == 1]
+    if len(prio_all):
+        ui.prio_callout(len(prio_all), int(prio_all["qty_actual"].notna().sum()),
+                        sub="Kartu ungu di bawah. Wajib dikerjakan dan diisi.")
 
     ver = st.session_state.get(f"ver_{sid}", 0)
-    f1, f2 = st.columns([2, 3])
+    f1, f2, f3 = st.columns([2, 2, 3])
     show = f1.segmented_control("Tampilkan", ["Belum diisi", "Semua"], default="Belum diisi" if n_belum else "Semua",
                                 key=f"show_{sid}")
-    q = f2.text_input("Cari customer / part", key=f"q_{sid}", placeholder="Ketik lalu Enter")
+    mode = f2.segmented_control("Tampilan", ["Per customer", "Daftar"], default="Per customer", key=f"mode_{sid}")
+    q = f3.text_input("Cari customer / part", key=f"q_{sid}", placeholder="Ketik lalu Enter")
     df = df_all
     if show == "Belum diisi":
         df = df[df["qty_actual"].isna()]
@@ -143,34 +169,28 @@ def page_input(engine):
     fields = {}
     with st.form(f"form_{sid}_{ver}", border=False):
         top_submit = st.form_submit_button("Simpan semua", type="primary", key=f"s1_{sid}_{ver}", width="stretch")
-        groups = list(dict.fromkeys(df["customer"].fillna("").tolist()))
-        for gi, cust in enumerate(groups):
-            sub = df[df["customer"].fillna("") == cust]
-            full = df_all[df_all["customer"].fillna("") == cust]
-            done = int(full["qty_actual"].notna().sum())
-            low = bool((full["qty_actual"] < full["qty_plan"]).any())
-            lamp = "🔴" if low else ("🟢" if done == len(full) else "🟡")
-            label = f"{lamp} {cust or '(tanpa customer)'}  ({done}/{len(full)} terisi)"
-            with st.expander(label, expanded=(gi == 0 or len(df) <= 10)):
-                for _, r in sub.iterrows():
-                    ik, plan = r["item_key"], int(r["qty_plan"])
-                    sa = None if pd.isna(r["qty_actual"]) else int(r["qty_actual"])
-                    rs0 = r["reason"] if isinstance(r["reason"], str) and r["reason"] in reasons else None
-                    sel0 = rs0 or (SESUAI if sa is not None and sa == plan else None)
-                    with st.container(border=True):
-                        st.markdown(ui.item_head(r["part_name"], r["remarks"], plan, ui.status_html(plan, sa)),
-                                    unsafe_allow_html=True)
-                        ok = st.checkbox("✓ Sesuai plan", value=(sel0 == SESUAI), key=_wkey("ok", sid, ver, ik))
-                        st.caption("Kurang dari plan? Pilih penyebab 4M, lalu isi Actual:")
-                        r4 = st.segmented_control("Penyebab 4M", reasons, default=rs0, key=_wkey("m4", sid, ver, ik),
-                                                  label_visibility="collapsed")
-                        v = st.number_input("Actual", min_value=0, step=1, value=sa if sa is not None and sa != plan else None,
-                                            placeholder="Actual (kalau beda dari plan)", key=_wkey("act", sid, ver, ik),
-                                            label_visibility="collapsed")
-                        note = st.text_input("Ket. 4M", value=clean(r["note"]) or "",
-                                             placeholder="Ket. 4M: jelaskan penyebabnya", key=_wkey("note", sid, ver, ik),
-                                             label_visibility="collapsed")
-                    fields[ik] = (r["part_name"], plan, sa, rs0, clean(r["note"]), ok, r4, v, note)
+
+        prio_df = df[df["is_priority"] == 1]
+        rest = df[df["is_priority"] != 1]
+        if len(prio_df):
+            done = int(prio_all["qty_actual"].notna().sum())
+            with st.expander(f"⭐ PRIORITAS: jangan di-skip ({done}/{len(prio_all)} terisi)", expanded=True):
+                for _, r in prio_df.iterrows():
+                    _render_item(r, sid, ver, reasons, fields, prio=True)
+
+        if mode == "Daftar":
+            for _, r in rest.iterrows():
+                _render_item(r, sid, ver, reasons, fields)
+        else:
+            for cust in dict.fromkeys(rest["customer"].fillna("").tolist()):
+                sub = rest[rest["customer"].fillna("") == cust]
+                full = df_all[df_all["customer"].fillna("") == cust]
+                dn = int(full["qty_actual"].notna().sum())
+                low = bool((full["qty_actual"] < full["qty_plan"]).any())
+                lamp = "🔴" if low else ("🟢" if dn == len(full) else "🟡")
+                with st.expander(f"{lamp} {cust or '(tanpa customer)'}  ({dn}/{len(full)} terisi)", expanded=True):
+                    for _, r in sub.iterrows():
+                        _render_item(r, sid, ver, reasons, fields)
         bottom_submit = st.form_submit_button("Simpan semua", type="primary", key=f"s2_{sid}_{ver}", width="stretch")
 
     if top_submit or bottom_submit:
@@ -218,8 +238,73 @@ def page_input(engine):
                 st.rerun()
 
 
-def idn_(n):
-    return ui.idn(n)
+# ------------------------------------------------------------------ halaman: prioritas (PPIC)
+def page_priority(engine):
+    top = st.container()
+    dates = db.list_dates(engine)
+    if not dates:
+        with top:
+            ui.header("Prioritas Packing", "Belum ada plan")
+        st.info("Belum ada plan. Upload Excel planning dulu.")
+        return
+    today = today_local().isoformat()
+    c1, c2 = st.columns([3, 2])
+    d = c1.selectbox("Tanggal", dates, index=next((i for i, x in enumerate(dates) if x >= today), len(dates) - 1),
+                     format_func=fmt_date, key="pr_date")
+    shift = c2.radio("Shift", [1, 2], horizontal=True, format_func=lambda s: f"Shift {s}", key="pr_shift")
+    sid = f"{d}_{shift}"
+    with top:
+        ui.header("Prioritas Packing", f"{fmt_date(d)} · Shift {shift}")
+
+    df_all = db.load_shift_sheet(engine, d, shift)
+    df_all = df_all[df_all["qty_plan"] > 0].reset_index(drop=True)
+    if df_all.empty:
+        st.info("Tidak ada plan untuk tanggal & shift ini.")
+        return
+    n_prio = int((df_all["is_priority"] == 1).sum())
+    st.markdown(f'<div class="pcall"><div><div class="pcall-t">Tandai item yang wajib di-packing</div>'
+                f'<div class="pcall-s">Di halaman leader, item ini muncul paling atas dengan warna ungu.</div></div>'
+                f'<div class="pcall-n">{n_prio}<small>item prioritas</small></div></div>', unsafe_allow_html=True)
+
+    ver = st.session_state.get(f"prver_{sid}", 0)
+    f1, f2 = st.columns([2, 3])
+    only = f1.segmented_control("Tampilkan", ["Semua", "Hanya prioritas"], default="Semua", key=f"pronly_{sid}")
+    q = f2.text_input("Cari customer / part", key=f"prq_{sid}", placeholder="Ketik lalu Enter")
+    df = df_all
+    if only == "Hanya prioritas":
+        df = df[df["is_priority"] == 1]
+    if q.strip():
+        mask = (df["customer"].fillna("").str.contains(q, case=False, regex=False)
+                | df["part_name"].fillna("").str.contains(q, case=False, regex=False))
+        df = df[mask]
+    df = df.reset_index(drop=True)
+    if df.empty:
+        st.info("Tidak ada item yang cocok.")
+        return
+
+    other = 2 if shift == 1 else 1
+    both = st.checkbox(f"Berlaku juga untuk Shift {other} di tanggal ini (perubahan centang ikut diterapkan)", key=f"prboth_{sid}")
+    view = pd.DataFrame({
+        "Prioritas": df["is_priority"] == 1,
+        "Customer": df["customer"].fillna(""),
+        "Part": df["part_name"],
+        "Ket.": df["remarks"].fillna(""),
+        "Plan": df["qty_plan"].astype(int),
+    })
+    edited = st.data_editor(view, hide_index=True, key=f"pred_{sid}_{ver}_{only}_{q}",
+                            disabled=["Customer", "Part", "Ket.", "Plan"], height=min(720, 40 + 35 * len(view)),
+                            column_config={"Prioritas": st.column_config.CheckboxColumn("⭐ Prioritas", width="small"),
+                                           "Plan": st.column_config.NumberColumn(format="%d")})
+    st.caption("Centang item yang prioritas, lalu Simpan. Simpan dulu sebelum mengganti pencarian atau tanggal.")
+    if st.button("💾 Simpan prioritas", type="primary"):
+        edited = edited.reset_index(drop=True)
+        checked = [df.loc[i, "item_key"] for i in range(len(edited)) if bool(edited.loc[i, "Prioritas"])]
+        in_view = list(df["item_key"])
+        db.save_priorities(engine, d, [shift, other] if both else [shift], checked, in_view,
+                           st.session_state.get("user", "PPIC"))
+        st.session_state[f"prver_{sid}"] = ver + 1
+        st.toast(f"Tersimpan ({len(checked)} item prioritas)", icon="⭐")
+        st.rerun()
 
 
 # ------------------------------------------------------------------ halaman: rekap
@@ -240,8 +325,12 @@ def page_recap(engine):
     ui.strip(s["plan_s1"], s["actual_s1"], s["belum_diisi"], s["items_s1"], s["kurang"], s["dikejar_total"],
              s["plan_s2"], s["target_s2"])
 
-    kurang = rec[rec["dikejar_s2"] > 0].sort_values("dikejar_s2", ascending=False)
-    belum = rec[rec["status"] == "S1 belum diisi"]
+    if s["prio_items"]:
+        st.markdown(f'<div class="pcall"><div><div class="pcall-t">{s["prio_items"]} item prioritas hari ini</div>'
+                    f'<div class="pcall-s">{s["prio_masalah"]} bermasalah: kurang di shift 1 atau belum diisi leader.</div></div>'
+                    f'<div class="pcall-n">{s["prio_masalah"]}<small>perlu dicek</small></div></div>', unsafe_allow_html=True)
+    kurang = rec[rec["dikejar_s2"] > 0].sort_values(["prioritas", "dikejar_s2"], ascending=[False, False])
+    belum = rec[rec["status"] == "S1 belum diisi"].sort_values("prioritas", ascending=False)
     t1, t2, t3 = st.tabs([f"Perlu dikejar ({len(kurang)})", f"Belum diisi ({len(belum)})", "Semua item"])
 
     with t1:
@@ -260,15 +349,15 @@ def page_recap(engine):
         else:
             st.caption("Leader belum mengisi item berikut:")
             st.markdown("".join(
-                f'<div class="row" style="border-left-color:#F0A800"><div class="row-l"><div class="row-p">{ui.esc(r["part_name"])}</div>'
+                f'<div class="row{" prio" if r["prioritas"] else ""}" style="border-left-color:{"#6A2FB5" if r["prioritas"] else "#F0A800"}"><div class="row-l"><div class="row-p">{ui.esc(r["part_name"])}{" <span class=pbadge>PRIORITAS</span>" if r["prioritas"] else ""}</div>'
                 f'<div class="row-c">{ui.esc(r["customer"]) or "(tanpa customer)"}</div></div>'
                 f'<div class="row-r"><div class="row-big" style="color:#1C2B39">{ui.idn(r["plan_s1"])}</div>'
                 f'<div class="row-s2">plan S1</div></div></div>' for _, r in belum.iterrows()), unsafe_allow_html=True)
     with t3:
-        names = {"customer": "Customer", "part_name": "Part", "remarks": "Remarks", "plan_s1": "Plan S1",
+        names = {"customer": "Customer", "part_name": "Part", "remarks": "Remarks", "prioritas": "Prioritas", "plan_s1": "Plan S1",
                  "actual_s1": "Actual S1", "sisa_s1": "Sisa S1", "alasan_s1": "Alasan S1", "ket_s1": "Ket. 4M S1",
                  "plan_s2": "Plan S2", "dikejar_s2": "Dikejar di S2", "target_s2": "Target S2", "status": "Status"}
-        show = rec.rename(columns=names)
+        show = rec.assign(prioritas=rec["prioritas"].map({True: "⭐", False: ""})).rename(columns=names)
 
         def color(row):
             st_ = row["Status"]
@@ -378,7 +467,7 @@ def main():
             st.rerun()
         page = "Input Actual"
         if role == "ppic":
-            page = st.radio("Halaman", ["Input Actual", "Rekap Shift", "Upload Plan"])
+            page = st.radio("Halaman", ["Input Actual", "Rekap Shift", "Prioritas", "Upload Plan"])
 
     if role == "ppic" and is_sqlite:
         st.warning("Database masih SQLite lokal: data bisa hilang saat app restart/redeploy. "
@@ -386,7 +475,8 @@ def main():
     if st.session_state.get("dev_mode"):
         st.info("Mode lokal: belum ada PPIC_PASSWORD / LEADER_PIN di Secrets, jadi tanpa login.")
 
-    {"Input Actual": page_input, "Rekap Shift": page_recap, "Upload Plan": page_upload}[page](engine)
+    {"Input Actual": page_input, "Rekap Shift": page_recap, "Prioritas": page_priority,
+     "Upload Plan": page_upload}[page](engine)
 
 
 main()
