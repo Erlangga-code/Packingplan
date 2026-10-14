@@ -21,6 +21,10 @@ SCHEMA = [
         item_key TEXT NOT NULL, plan_date TEXT NOT NULL, shift INTEGER NOT NULL,
         qty_actual INTEGER, reason TEXT, note TEXT, input_by TEXT, updated_at TEXT,
         PRIMARY KEY (item_key, plan_date, shift))""",
+    """CREATE TABLE IF NOT EXISTS priorities (
+        item_key TEXT NOT NULL, plan_date TEXT NOT NULL, shift INTEGER NOT NULL,
+        marked_by TEXT, updated_at TEXT,
+        PRIMARY KEY (item_key, plan_date, shift))""",
     """CREATE TABLE IF NOT EXISTS uploads (
         upload_id TEXT PRIMARY KEY, filename TEXT, period_text TEXT, uploaded_by TEXT,
         uploaded_at TEXT, n_items INTEGER, n_plan_rows INTEGER, date_from TEXT, date_to TEXT)""",
@@ -114,10 +118,12 @@ def list_dates(engine) -> list[str]:
 def load_shift_sheet(engine, plan_date: str, shift: int) -> pd.DataFrame:
     sql = """
         SELECT i.item_key, i.customer, i.part_name, i.remarks, i.sort_order, p.qty_plan,
-               a.qty_actual, a.reason, a.note, a.input_by, a.updated_at
+               a.qty_actual, a.reason, a.note, a.input_by, a.updated_at,
+               CASE WHEN pr.item_key IS NULL THEN 0 ELSE 1 END AS is_priority
         FROM plans p
         JOIN items i ON i.item_key = p.item_key
         LEFT JOIN actuals a ON a.item_key = p.item_key AND a.plan_date = p.plan_date AND a.shift = p.shift
+        LEFT JOIN priorities pr ON pr.item_key = p.item_key AND pr.plan_date = p.plan_date AND pr.shift = p.shift
         WHERE p.plan_date = :d AND p.shift = :s AND (p.qty_plan > 0 OR a.qty_actual IS NOT NULL)
         ORDER BY i.sort_order, i.item_key"""
     with engine.connect() as conn:
@@ -128,10 +134,12 @@ def load_day(engine, plan_date: str) -> pd.DataFrame:
     """Gabungan plan + actual kedua shift untuk satu tanggal (format panjang)."""
     sql = """
         SELECT i.item_key, i.customer, i.part_name, i.remarks, i.sort_order, p.shift, p.qty_plan,
-               a.qty_actual, a.reason, a.note, a.input_by, a.updated_at
+               a.qty_actual, a.reason, a.note, a.input_by, a.updated_at,
+               CASE WHEN pr.item_key IS NULL THEN 0 ELSE 1 END AS is_priority
         FROM plans p
         JOIN items i ON i.item_key = p.item_key
         LEFT JOIN actuals a ON a.item_key = p.item_key AND a.plan_date = p.plan_date AND a.shift = p.shift
+        LEFT JOIN priorities pr ON pr.item_key = p.item_key AND pr.plan_date = p.plan_date AND pr.shift = p.shift
         WHERE p.plan_date = :d AND (p.qty_plan > 0 OR a.qty_actual IS NOT NULL)
         ORDER BY i.sort_order, i.item_key"""
     with engine.connect() as conn:
@@ -161,3 +169,21 @@ def save_actuals(engine, plan_date: str, shift: int, rows: list[dict], user: str
         if rm:
             conn.execute(text("DELETE FROM actuals WHERE item_key=:k AND plan_date=:d AND shift=:s"), rm)
     return len(up) + len(rm)
+
+
+# ------------------------------------------------------------------ prioritas
+def save_priorities(engine, plan_date: str, shifts: list[int], checked: list[str], in_view: list[str], user: str) -> int:
+    """Tandai/lepas prioritas. in_view = semua item yang sedang tampil di layar PPIC (yang tidak
+    dicentang di antaranya dilepas), checked = yang dicentang. shifts = shift yang terpengaruh."""
+    base = [{"k": k, "d": plan_date, "s": int(s)} for s in shifts for k in in_view]
+    ups = [{"k": k, "d": plan_date, "s": int(s), "u": user, "t": _now()} for s in shifts for k in checked]
+    with engine.begin() as conn:
+        if base:
+            conn.execute(text("DELETE FROM priorities WHERE item_key=:k AND plan_date=:d AND shift=:s"), base)
+        if ups:
+            conn.execute(text("""
+                INSERT INTO priorities (item_key, plan_date, shift, marked_by, updated_at)
+                VALUES (:k, :d, :s, :u, :t)
+                ON CONFLICT (item_key, plan_date, shift) DO UPDATE SET marked_by=excluded.marked_by,
+                    updated_at=excluded.updated_at"""), ups)
+    return len(checked)
