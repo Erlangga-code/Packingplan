@@ -75,6 +75,14 @@ CSS = """
 .pcall-n small{display:block;font:500 12px 'Barlow',sans-serif;color:#E6D9F8}
 [class*="st-key-prio_"]{border-left:8px solid #6A2FB5 !important;border-color:#CDB6EE #CDB6EE #CDB6EE #6A2FB5 !important;background:#F5EFFD !important}
 .row.prio{border-left-color:#6A2FB5;background:#F5EFFD}
+.row.ok{border-left-color:var(--ok)}
+.okl{font:500 14px 'Barlow',sans-serif;padding:4px 0;color:#3C4B5A;border-bottom:1px solid #EEF1F5;display:flex;justify-content:space-between;gap:10px}
+.okl b{font-weight:600;color:var(--ink)}
+.sum{display:flex;gap:8px;flex-wrap:wrap;margin:2px 0 10px}
+.sum span{font:600 14px 'Barlow',sans-serif;padding:4px 12px;border-radius:999px;background:#E8EDF3;color:var(--ink)}
+.sum .g{background:var(--ok-bg);color:#0F6B47}.sum .r{background:var(--bad-bg);color:#9A2323}.sum .y{background:var(--wait-bg);color:#6E4A00}
+.lk{margin-top:8px;font:500 14px 'Barlow',sans-serif;color:#3C4B5A;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.lkb{font:600 12px 'Barlow',sans-serif;padding:2px 9px;border-radius:999px;background:#DDE3EA;color:#3C4B5A}
 .empty{background:#fff;border:1px dashed var(--line);border-radius:10px;padding:16px;color:var(--mute);font:500 15px 'Barlow',sans-serif}
 </style>
 """
@@ -175,3 +183,37 @@ def prio_callout(total: int, done: int, title: str = "Item PRIORITAS: tidak bole
     sub_html = f'<div class="pcall-s">{esc(sub)}</div>' if sub else ""
     st.markdown(f'<div class="pcall"><div><div class="pcall-t">{esc(title)}</div>{sub_html}</div>'
                 f'<div class="pcall-n">{done}/{total}<small>sudah diisi</small></div></div>', unsafe_allow_html=True)
+
+
+def preview_summary(n_ok: int, n_kurang: int, n_lebih: int) -> str:
+    parts = [f'<span>{n_ok + n_kurang + n_lebih} item akan dikunci</span>', f'<span class="g">{n_ok} sesuai</span>']
+    if n_kurang:
+        parts.append(f'<span class="r">{n_kurang} kurang</span>')
+    if n_lebih:
+        parts.append(f'<span class="y">{n_lebih} lebih</span>')
+    return '<div class="sum">' + "".join(parts) + '</div>'
+
+
+def preview_detail(it: dict) -> str:
+    """Baris detail untuk item yang kurang / lebih dari plan."""
+    diff = it["qa"] - it["plan"]
+    cls = "" if diff < 0 else " ok"
+    chip = f'<span class="chip">{esc(it["reason"])}</span>' if it.get("reason") else ""
+    note = f'<div class="row-n">{esc(it["note"])}</div>' if it.get("note") else ""
+    prio = '<span class="pbadge">PRIORITAS</span>' if it.get("prio") else ""
+    big = f'-{idn(-diff)}' if diff < 0 else f'+{idn(diff)}'
+    color = "var(--bad)" if diff < 0 else "#B07A00"
+    return (f'<div class="row{cls}"><div class="row-l"><div class="row-p">{esc(it["part"])}</div>'
+            f'<div class="it-meta" style="margin-top:6px">{prio}{chip}</div>{note}</div>'
+            f'<div class="row-r"><div class="row-big" style="color:{color}">{big}</div>'
+            f'<div class="row-s2">Actual {idn(it["qa"])} dari plan {idn(it["plan"])}</div></div></div>')
+
+
+def preview_ok_line(it: dict) -> str:
+    return f'<div class="okl"><span>{esc(it["part"])}</span><b>{idn(it["qa"])}</b></div>'
+
+
+def locked_info(actual, reason, note) -> str:
+    chips = "".join([f'<span class="lkb">{esc(reason)}</span>' if reason else "",
+                     f'<span>{esc(note)}</span>' if note else ""])
+    return f'<div class="lk"><span class="lkb">🔒 Terkunci</span><span>Actual <b>{idn(actual)}</b></span>{chips}</div>'
