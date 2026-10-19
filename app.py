@@ -149,13 +149,13 @@ def page_input(engine):
                         sub="Kartu ungu di bawah. Wajib dikerjakan dan diisi.")
 
     ver = st.session_state.get(f"ver_{sid}", 0)
-    f1, f2, f3 = st.columns([2, 2, 3])
-    show = f1.segmented_control("Tampilkan", ["Belum diisi", "Semua"], default="Belum diisi" if n_belum else "Semua",
-                                key=f"show_{sid}")
-    mode = f2.segmented_control("Tampilan", ["Per customer", "Daftar"], default="Per customer", key=f"mode_{sid}")
-    q = f3.text_input("Cari customer / part", key=f"q_{sid}", placeholder="Ketik lalu Enter")
+    f1, f2 = st.columns([3, 3])
+    view_default = "Belum diisi" if n_belum else "Per customer"
+    view = f1.segmented_control("Tampilkan", ["Belum diisi", "Per customer", "Daftar semua"], default=view_default,
+                                key=f"view_{sid}") or view_default
+    q = f2.text_input("Cari customer / part", key=f"q_{sid}", placeholder="Ketik lalu Enter")
     df = df_all
-    if show == "Belum diisi":
+    if view == "Belum diisi":
         df = df[df["qty_actual"].isna()]
     if q.strip():
         mask = (df["customer"].fillna("").str.contains(q, case=False, regex=False)
@@ -164,11 +164,11 @@ def page_input(engine):
     df = df.reset_index(drop=True)
     msg = st.container()
     if df.empty:
-        st.success("Semua item sudah terisi. Pilih 'Semua' untuk melihat atau mengubah.") if not q.strip() and show == "Belum diisi" \
-            else st.info("Tidak ada item yang cocok.")
+        st.success("Semua item sudah terisi. Pilih 'Per customer' atau 'Daftar semua' untuk melihat atau mengubah.") \
+            if not q.strip() and view == "Belum diisi" else st.info("Tidak ada item yang cocok.")
         return
-    st.caption("Centang Sesuai plan kalau hasil sama dengan plan. Kalau kurang, pilih penyebab 4M, isi Actual, "
-               "dan jelaskan di Ket. 4M. Tekan Simpan sebelum mengganti pencarian atau tanggal.")
+    st.caption("Sesuai plan: centang. Kurang: pilih 4M, isi Actual, jelaskan di Ket. 4M. "
+               "Simpan dulu sebelum ganti pencarian atau tanggal.")
 
     reasons = list(config.REASONS)
     fields = {}
@@ -183,7 +183,7 @@ def page_input(engine):
                 for _, r in prio_df.iterrows():
                     _render_item(r, sid, ver, reasons, fields, prio=True)
 
-        if mode == "Daftar":
+        if view == "Daftar semua":
             for _, r in rest.iterrows():
                 _render_item(r, sid, ver, reasons, fields)
         else:
