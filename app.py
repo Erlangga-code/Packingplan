@@ -112,7 +112,95 @@ def _render_item(r, sid, ver, reasons, fields, prio=False):
                             label_visibility="collapsed")
         note = st.text_input("Ket. 4M", value=clean(r["note"]) or "", placeholder="Ket. 4M: jelaskan penyebabnya",
                              key=_wkey("note", sid, ver, ik), label_visibility="collapsed")
-    fields[ik] = (r["part_name"], plan, sa, rs0, clean(r["note"]), ok, r4, v, note)
+    fields[ik] = (r["part_name"], plan, sa, rs0, clean(r["note"]), ok, r4, v, note, prio)
+
+
+def prepare_changes(fields, reasons):
+    """Validasi isian leader. Mengembalikan (errors, rows, preview).
+    rows = yang akan disimpan (qty_actual None = kosongkan), preview = item berisi Actual untuk dicek lalu dikunci."""
+    errors, rows, preview = [], [], []
+    for ik, (part, plan, sa, rs0, note0, ok, r4, v, note, prio) in fields.items():
+        v = None if v is None else int(v)
+        note = clean(note)
+        note = note.upper() if note else None
+        note_old = note0.upper() if note0 else None
+        qa, rs = None, None
+        if ok and r4:
+            errors.append(f"{part}: pilih salah satu, Sesuai plan atau penyebab 4M.")
+            continue
+        if ok:
+            if v is not None and v < plan:
+                errors.append(f"{part}: Actual {idn_(v)} lebih kecil dari plan, hilangkan centang Sesuai plan dan pilih 4M.")
+                continue
+            qa = v if v is not None else plan
+        elif r4:
+            if v is None:
+                errors.append(f"{part}: isi Actual (kurang dari {idn_(plan)}).")
+                continue
+            if v >= plan:
+                errors.append(f"{part}: penyebab 4M dipilih tapi Actual {idn_(v)} tidak kurang dari plan.")
+                continue
+            qa, rs = v, r4
+        elif v is not None:
+            if v < plan:
+                errors.append(f"{part}: Actual {idn_(v)} < plan {idn_(plan)}, pilih penyebab 4M.")
+                continue
+            qa = v
+        if qa is None:
+            if note and note != note_old:
+                errors.append(f"{part}: Ket. 4M diisi tapi Actual belum diisi.")
+                continue
+            if sa is not None or rs0:  # leader mengosongkan item yang tadinya terisi (belum terkunci)
+                rows.append({"item_key": ik, "qty_actual": None, "reason": None, "note": None})
+            continue
+        rows.append({"item_key": ik, "qty_actual": qa, "reason": rs, "note": note})
+        preview.append({"part": part, "plan": plan, "qa": qa, "reason": rs, "note": note, "prio": prio})
+    return errors, rows, preview
+
+
+@st.dialog("Cek dulu sebelum dikunci", width="large")
+def confirm_dialog(engine, d, shift, sid, ver, rows, preview, user):
+    n_ok = sum(1 for p in preview if p["qa"] == p["plan"])
+    n_kurang = sum(1 for p in preview if p["qa"] < p["plan"])
+    n_lebih = len(preview) - n_ok - n_kurang
+    st.markdown(ui.preview_summary(n_ok, n_kurang, n_lebih), unsafe_allow_html=True)
+    beda = sorted((p for p in preview if p["qa"] != p["plan"]), key=lambda p: (p["qa"] >= p["plan"], not p["prio"]))
+    if beda:
+        st.markdown("".join(ui.preview_detail(p) for p in beda), unsafe_allow_html=True)
+    sesuai = [p for p in preview if p["qa"] == p["plan"]]
+    if sesuai:
+        with st.expander(f"Lihat {len(sesuai)} item yang sesuai plan"):
+            st.markdown("".join(ui.preview_ok_line(p) for p in sesuai), unsafe_allow_html=True)
+    st.caption("Setelah dikunci, angka tidak bisa diubah oleh leader. Hanya PPIC yang bisa membuka kunci.")
+    c1, c2 = st.columns(2)
+    if c1.button("Kembali ubah", width="stretch"):
+        st.rerun()
+    if c2.button("✅ Ya, kunci", type="primary", width="stretch"):
+        res = db.save_actuals(engine, d, shift, rows, user, lock=True)
+        st.session_state[f"ver_{sid}"] = ver + 1
+        msg = f"Tersimpan dan dikunci: {len(preview)} item."
+        if res["skipped"]:
+            msg += f" {len(res['skipped'])} item dilewati karena sudah dikunci orang lain."
+        st.session_state["flash"] = msg
+        st.rerun()
+
+
+def _render_locked(lock_df, sid, engine, shift, d, is_ppic, user):
+    with st.expander(f"🔒 Sudah dikunci ({len(lock_df)})", expanded=False):
+        if not is_ppic:
+            st.caption("Item di sini sudah dikonfirmasi. Kalau ada yang salah, minta PPIC membuka kuncinya.")
+        for _, r in lock_df.iterrows():
+            ik, plan = r["item_key"], int(r["qty_plan"])
+            sa = int(r["qty_actual"]) if pd.notna(r["qty_actual"]) else None
+            prio = bool(r["is_priority"])
+            box = st.container(border=True, key=_wkey("prio", sid, 0, ik)) if prio else st.container(border=True)
+            with box:
+                st.markdown(ui.item_head(r["part_name"], r["remarks"], plan, ui.status_html(plan, sa), prio)
+                            + ui.locked_info(sa, clean(r["reason"]), clean(r["note"])), unsafe_allow_html=True)
+                if is_ppic and st.button("🔓 Buka kunci", key=_wkey("unl", sid, 0, ik)):
+                    db.unlock_item(engine, d, shift, ik, user)
+                    st.session_state["flash"] = f"Kunci dibuka: {r['part_name']}"
+                    st.rerun()
 
 
 def page_input(engine):
@@ -132,11 +220,16 @@ def page_input(engine):
     sid = f"{d}_{shift}"
     with top:
         ui.header("Input Actual", f"{fmt_date(d)} · Shift {shift}")
+    flash = st.session_state.pop("flash", None)
+    if flash:
+        st.success(flash)
 
     df_all = db.load_shift_sheet(engine, d, shift)
     if df_all.empty:
         st.info("Tidak ada plan untuk tanggal & shift ini.")
         return
+    user = st.session_state.get("user", "?")
+    is_ppic = st.session_state.get("role") == "ppic"
 
     act = df_all["qty_actual"]
     n_belum = int(act.isna().sum())
@@ -150,25 +243,31 @@ def page_input(engine):
 
     ver = st.session_state.get(f"ver_{sid}", 0)
     f1, f2 = st.columns([3, 3])
-    view_default = "Belum diisi" if n_belum else "Per customer"
-    view = f1.segmented_control("Tampilkan", ["Belum diisi", "Per customer", "Daftar semua"], default=view_default,
-                                key=f"view_{sid}") or view_default
+    view = f1.segmented_control("Tampilkan", ["Per customer", "Daftar"], default="Per customer",
+                                key=f"view_{sid}") or "Per customer"
     q = f2.text_input("Cari customer / part", key=f"q_{sid}", placeholder="Ketik lalu Enter")
-    df = df_all
-    if view == "Belum diisi":
-        df = df[df["qty_actual"].isna()]
-    if q.strip():
-        mask = (df["customer"].fillna("").str.contains(q, case=False, regex=False)
-                | df["part_name"].fillna("").str.contains(q, case=False, regex=False))
-        df = df[mask]
-    df = df.reset_index(drop=True)
+
+    def search(frame):
+        if not q.strip():
+            return frame
+        m = (frame["customer"].fillna("").str.contains(q, case=False, regex=False)
+             | frame["part_name"].fillna("").str.contains(q, case=False, regex=False))
+        return frame[m]
+
+    lock_df = search(df_all[df_all["is_locked"] == 1]).reset_index(drop=True)
+    if len(lock_df):
+        _render_locked(lock_df, sid, engine, shift, d, is_ppic, user)
+
+    df = search(df_all[df_all["is_locked"] == 0]).reset_index(drop=True)
     msg = st.container()
     if df.empty:
-        st.success("Semua item sudah terisi. Pilih 'Per customer' atau 'Daftar semua' untuk melihat atau mengubah.") \
-            if not q.strip() and view == "Belum diisi" else st.info("Tidak ada item yang cocok.")
+        if not q.strip():
+            st.success("Semua item sudah dikunci. Buka bagian 'Sudah dikunci' untuk melihatnya.")
+        else:
+            st.info("Tidak ada item yang cocok.")
         return
     st.caption("Sesuai plan: centang. Kurang: pilih 4M, isi Actual, jelaskan di Ket. 4M. "
-               "Simpan dulu sebelum ganti pencarian atau tanggal.")
+               "Tekan Simpan untuk cek lalu kunci. Simpan dulu sebelum ganti pencarian atau tanggal.")
 
     reasons = list(config.REASONS)
     fields = {}
@@ -183,7 +282,7 @@ def page_input(engine):
                 for _, r in prio_df.iterrows():
                     _render_item(r, sid, ver, reasons, fields, prio=True)
 
-        if view == "Daftar semua":
+        if view == "Daftar":
             for _, r in rest.iterrows():
                 _render_item(r, sid, ver, reasons, fields)
         else:
@@ -199,48 +298,21 @@ def page_input(engine):
         bottom_submit = st.form_submit_button("Simpan semua", type="primary", key=f"s2_{sid}_{ver}", width="stretch")
 
     if top_submit or bottom_submit:
-        errors, out = [], []
-        for ik, (part, plan, sa, rs0, note0, ok, r4, v, note) in fields.items():
-            v = None if v is None else int(v)
-            note = (clean(note) or "")
-            note = note.upper() if note else None
-            qa, rs = None, None
-            if ok and r4:
-                errors.append(f"{part}: pilih salah satu, Sesuai plan atau penyebab 4M.")
-                continue
-            if ok:
-                if v is not None and v < plan:
-                    errors.append(f"{part}: Actual {idn_(v)} lebih kecil dari plan, hilangkan centang Sesuai plan dan pilih 4M.")
-                    continue
-                qa = v if v is not None else plan
-            elif r4:
-                if v is None:
-                    errors.append(f"{part}: isi Actual (kurang dari {idn_(plan)}).")
-                    continue
-                if v >= plan:
-                    errors.append(f"{part}: penyebab 4M dipilih tapi Actual {idn_(v)} tidak kurang dari plan.")
-                    continue
-                qa, rs = v, r4
-            elif v is not None:
-                if v < plan:
-                    errors.append(f"{part}: Actual {idn_(v)} < plan {idn_(plan)}, pilih penyebab 4M.")
-                    continue
-                qa = v
-            new = (qa, rs, note)
-            old = (sa, rs0, (note0.upper() if note0 else None))
-            if new != old:
-                out.append({"item_key": ik, "qty_actual": qa, "reason": rs, "note": note})
-        with msg:
-            if errors:
+        errors, rows, preview = prepare_changes(fields, reasons)
+        if errors:
+            with msg:
                 st.error("Belum bisa disimpan:\n\n" + "\n".join(f"- {e}" for e in errors[:12])
                          + (f"\n- ... dan {len(errors) - 12} lainnya" if len(errors) > 12 else ""))
-            elif not out:
-                st.info("Tidak ada perubahan untuk disimpan.")
-            else:
-                n = db.save_actuals(engine, d, shift, out, st.session_state.get("user", "?"))
-                st.session_state[f"ver_{sid}"] = ver + 1
-                st.toast(f"Tersimpan ({n} item)", icon="✅")
-                st.rerun()
+        elif preview:
+            confirm_dialog(engine, d, shift, sid, ver, rows, preview, user)
+        elif rows:  # hanya pengosongan item yang belum terkunci
+            db.save_actuals(engine, d, shift, rows, user)
+            st.session_state[f"ver_{sid}"] = ver + 1
+            st.session_state["flash"] = "Perubahan tersimpan."
+            st.rerun()
+        else:
+            with msg:
+                st.info("Belum ada yang diisi.")
 
 
 # ------------------------------------------------------------------ halaman: prioritas (PPIC)
@@ -336,7 +408,7 @@ def page_recap(engine):
                     f'<div class="pcall-n">{s["prio_masalah"]}<small>perlu dicek</small></div></div>', unsafe_allow_html=True)
     kurang = rec[rec["dikejar_s2"] > 0].sort_values(["prioritas", "dikejar_s2"], ascending=[False, False])
     belum = rec[rec["status"] == "S1 belum diisi"].sort_values("prioritas", ascending=False)
-    t1, t2, t3 = st.tabs([f"Perlu dikejar ({len(kurang)})", f"Belum diisi ({len(belum)})", "Semua item"])
+    t1, t2, t3, t4 = st.tabs([f"Perlu dikejar ({len(kurang)})", f"Belum diisi ({len(belum)})", "Semua item", "Riwayat"])
 
     with t1:
         if kurang.empty:
@@ -373,6 +445,21 @@ def page_recap(engine):
         num = ["Plan S1", "Actual S1", "Sisa S1", "Plan S2", "Dikejar di S2", "Target S2"]
         st.dataframe(show.style.apply(color, axis=1).format({c: ui.idn for c in num}, na_rep="-"),
                      hide_index=True, height=min(700, 40 + 35 * max(len(show), 3)))
+    with t4:
+        log = db.load_audit(engine, d)
+        if log.empty:
+            st.markdown('<div class="empty">Belum ada riwayat untuk tanggal ini.</div>', unsafe_allow_html=True)
+        else:
+            log["at"] = pd.to_datetime(log["at"], utc=True).dt.tz_convert(config.TZ_NAME).dt.strftime("%d/%m %H:%M")
+            log["perubahan"] = log.apply(lambda r: (
+                f"{ui.idn(r['old_actual'])} → {ui.idn(r['new_actual'])}" if r["action"] == "UBAH" else
+                (f"Actual {ui.idn(r['new_actual'])}" if r["action"] == "KUNCI" else
+                 (f"Actual {ui.idn(r['old_actual'])}" if pd.notna(r["old_actual"]) else ""))), axis=1)
+            show_log = log[["at", "shift", "action", "part_name", "perubahan", "new_reason", "new_note", "by_user"]].rename(
+                columns={"at": "Waktu", "shift": "Shift", "action": "Aksi", "part_name": "Part", "perubahan": "Angka",
+                         "new_reason": "4M", "new_note": "Ket. 4M", "by_user": "Oleh"})
+            st.caption("Aksi: KUNCI = leader mengonfirmasi, UBAH = angka diganti, BUKA KUNCI = dibuka PPIC, HAPUS = dikosongkan.")
+            st.dataframe(show_log, hide_index=True, height=min(600, 40 + 35 * max(len(show_log), 3)))
     st.download_button("⬇️ Unduh rekap (Excel)", recap.to_excel(rec), file_name=f"rekap_{d}.xlsx",
                        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
