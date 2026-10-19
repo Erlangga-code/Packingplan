@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import uuid
 
 import pandas as pd
 from sqlalchemy import create_engine, text
@@ -26,6 +27,14 @@ SCHEMA = [
         item_key TEXT NOT NULL, plan_date TEXT NOT NULL, shift INTEGER NOT NULL,
         marked_by TEXT, updated_at TEXT,
         PRIMARY KEY (item_key, plan_date, shift))""",
+    """CREATE TABLE IF NOT EXISTS locks (
+        item_key TEXT NOT NULL, plan_date TEXT NOT NULL, shift INTEGER NOT NULL,
+        locked_by TEXT, locked_at TEXT,
+        PRIMARY KEY (item_key, plan_date, shift))""",
+    """CREATE TABLE IF NOT EXISTS audit (
+        log_id TEXT PRIMARY KEY, plan_date TEXT, shift INTEGER, item_key TEXT, action TEXT,
+        old_actual INTEGER, new_actual INTEGER, old_reason TEXT, new_reason TEXT,
+        old_note TEXT, new_note TEXT, by_user TEXT, at TEXT)""",
     """CREATE TABLE IF NOT EXISTS uploads (
         upload_id TEXT PRIMARY KEY, filename TEXT, period_text TEXT, uploaded_by TEXT,
         uploaded_at TEXT, n_items INTEGER, n_plan_rows INTEGER, date_from TEXT, date_to TEXT)""",
@@ -51,7 +60,7 @@ def init_db(engine):
 
 
 def _now() -> str:
-    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="seconds")
+    return dt.datetime.now(dt.timezone.utc).isoformat(timespec="milliseconds")
 
 
 def _records(df: pd.DataFrame) -> list[dict]:
@@ -124,11 +133,13 @@ def load_shift_sheet(engine, plan_date: str, shift: int) -> pd.DataFrame:
     sql = """
         SELECT i.item_key, i.customer, i.part_name, i.remarks, i.sort_order, p.qty_plan,
                a.qty_actual, a.reason, a.note, a.input_by, a.updated_at,
-               CASE WHEN pr.item_key IS NULL THEN 0 ELSE 1 END AS is_priority
+               CASE WHEN pr.item_key IS NULL THEN 0 ELSE 1 END AS is_priority,
+               CASE WHEN lk.item_key IS NULL THEN 0 ELSE 1 END AS is_locked
         FROM plans p
         JOIN items i ON i.item_key = p.item_key
         LEFT JOIN actuals a ON a.item_key = p.item_key AND a.plan_date = p.plan_date AND a.shift = p.shift
         LEFT JOIN priorities pr ON pr.item_key = p.item_key AND pr.plan_date = p.plan_date AND pr.shift = p.shift
+        LEFT JOIN locks lk ON lk.item_key = p.item_key AND lk.plan_date = p.plan_date AND lk.shift = p.shift
         WHERE p.plan_date = :d AND p.shift = :s AND (p.qty_plan > 0 OR a.qty_actual IS NOT NULL)
         ORDER BY i.sort_order, i.item_key"""
     with engine.connect() as conn:
@@ -140,11 +151,13 @@ def load_day(engine, plan_date: str) -> pd.DataFrame:
     sql = """
         SELECT i.item_key, i.customer, i.part_name, i.remarks, i.sort_order, p.shift, p.qty_plan,
                a.qty_actual, a.reason, a.note, a.input_by, a.updated_at,
-               CASE WHEN pr.item_key IS NULL THEN 0 ELSE 1 END AS is_priority
+               CASE WHEN pr.item_key IS NULL THEN 0 ELSE 1 END AS is_priority,
+               CASE WHEN lk.item_key IS NULL THEN 0 ELSE 1 END AS is_locked
         FROM plans p
         JOIN items i ON i.item_key = p.item_key
         LEFT JOIN actuals a ON a.item_key = p.item_key AND a.plan_date = p.plan_date AND a.shift = p.shift
         LEFT JOIN priorities pr ON pr.item_key = p.item_key AND pr.plan_date = p.plan_date AND pr.shift = p.shift
+        LEFT JOIN locks lk ON lk.item_key = p.item_key AND lk.plan_date = p.plan_date AND lk.shift = p.shift
         WHERE p.plan_date = :d AND (p.qty_plan > 0 OR a.qty_actual IS NOT NULL)
         ORDER BY i.sort_order, i.item_key"""
     with engine.connect() as conn:
@@ -152,28 +165,87 @@ def load_day(engine, plan_date: str) -> pd.DataFrame:
 
 
 # ------------------------------------------------------------------ simpan actual
-def save_actuals(engine, plan_date: str, shift: int, rows: list[dict], user: str) -> int:
-    """rows: item_key, qty_actual (int|None), reason (str|None), note (str|None).
-    Baris yang kosong semua = hapus data actual item itu."""
-    up, rm = [], []
-    for r in rows:
-        qa, rs, nt = r.get("qty_actual"), (r.get("reason") or None), ((r.get("note") or "").strip().upper() or None)
-        base = {"k": r["item_key"], "d": plan_date, "s": int(shift)}
-        if qa is None and rs is None and nt is None:
-            rm.append(base)
-        else:
-            up.append({**base, "qa": None if qa is None else int(qa), "r": rs, "n": nt, "u": user, "t": _now()})
+def _audit(action, d, s, k, old, new, user):
+    old, new = old or (None, None, None), new or (None, None, None)
+    return {"id": uuid.uuid4().hex, "d": d, "s": int(s), "k": k, "a": action,
+            "oq": old[0], "nq": new[0], "or": old[1], "nr": new[1], "on": old[2], "nn": new[2], "u": user, "t": _now()}
+
+
+_AUDIT_SQL = """INSERT INTO audit (log_id, plan_date, shift, item_key, action, old_actual, new_actual,
+                old_reason, new_reason, old_note, new_note, by_user, at)
+                VALUES (:id, :d, :s, :k, :a, :oq, :nq, :or, :nr, :on, :nn, :u, :t)"""
+
+
+def save_actuals(engine, plan_date: str, shift: int, rows: list[dict], user: str, lock: bool = False) -> dict:
+    """rows: item_key, qty_actual (int|None), reason, note. Baris kosong semua = hapus actual item itu.
+    lock=True: item yang punya actual ikut dikunci. Item yang SUDAH terkunci dilewati (dikembalikan di 'skipped').
+    Semua perubahan tercatat di tabel audit."""
+    base = {"d": plan_date, "s": int(shift)}
+    saved, skipped, logs, ups, rms, lks = 0, [], [], [], [], []
     with engine.begin() as conn:
-        if up:
+        old = {r[0]: (r[1], r[2], r[3]) for r in conn.execute(
+            text("SELECT item_key, qty_actual, reason, note FROM actuals WHERE plan_date=:d AND shift=:s"), base)}
+        locked = {r[0] for r in conn.execute(text("SELECT item_key FROM locks WHERE plan_date=:d AND shift=:s"), base)}
+        for r in rows:
+            k = r["item_key"]
+            if k in locked:
+                skipped.append(k)
+                continue
+            qa, rs, nt = r.get("qty_actual"), (r.get("reason") or None), ((r.get("note") or "").strip().upper() or None)
+            qa = None if qa is None else int(qa)
+            if qa is None and rs is None and nt is None:
+                if k in old:
+                    rms.append({"k": k, **base})
+                    logs.append(_audit("HAPUS", plan_date, shift, k, old[k], None, user))
+                    saved += 1
+                continue
+            new = (qa, rs, nt)
+            ups.append({"k": k, **base, "qa": qa, "r": rs, "n": nt, "u": user, "t": _now()})
+            if k in old and old[k] != new:
+                logs.append(_audit("UBAH", plan_date, shift, k, old[k], new, user))
+            if lock and qa is not None:
+                lks.append({"k": k, **base, "u": user, "t": _now()})
+                logs.append(_audit("KUNCI", plan_date, shift, k, None, new, user))
+            saved += 1
+        if ups:
             conn.execute(text("""
                 INSERT INTO actuals (item_key, plan_date, shift, qty_actual, reason, note, input_by, updated_at)
                 VALUES (:k, :d, :s, :qa, :r, :n, :u, :t)
                 ON CONFLICT (item_key, plan_date, shift) DO UPDATE SET qty_actual=excluded.qty_actual,
                     reason=excluded.reason, note=excluded.note, input_by=excluded.input_by,
-                    updated_at=excluded.updated_at"""), up)
-        if rm:
-            conn.execute(text("DELETE FROM actuals WHERE item_key=:k AND plan_date=:d AND shift=:s"), rm)
-    return len(up) + len(rm)
+                    updated_at=excluded.updated_at"""), ups)
+        if rms:
+            conn.execute(text("DELETE FROM actuals WHERE item_key=:k AND plan_date=:d AND shift=:s"), rms)
+        if lks:
+            conn.execute(text("""
+                INSERT INTO locks (item_key, plan_date, shift, locked_by, locked_at)
+                VALUES (:k, :d, :s, :u, :t)
+                ON CONFLICT (item_key, plan_date, shift) DO UPDATE SET locked_by=excluded.locked_by,
+                    locked_at=excluded.locked_at"""), lks)
+        if logs:
+            conn.execute(text(_AUDIT_SQL), logs)
+    return {"saved": saved, "skipped": skipped}
+
+
+def unlock_item(engine, plan_date: str, shift: int, item_key: str, user: str) -> bool:
+    """Buka kunci satu item (khusus PPIC). Tercatat di audit."""
+    p = {"k": item_key, "d": plan_date, "s": int(shift)}
+    with engine.begin() as conn:
+        n = conn.execute(text("DELETE FROM locks WHERE item_key=:k AND plan_date=:d AND shift=:s"), p).rowcount
+        if n:
+            cur = conn.execute(text("SELECT qty_actual, reason, note FROM actuals WHERE item_key=:k AND plan_date=:d AND shift=:s"), p).fetchone()
+            conn.execute(text(_AUDIT_SQL), _audit("BUKA KUNCI", plan_date, shift, item_key, tuple(cur) if cur else None, None, user))
+    return bool(n)
+
+
+def load_audit(engine, plan_date: str, limit: int = 300) -> pd.DataFrame:
+    sql = """
+        SELECT a.at, a.shift, i.customer, i.part_name, a.action, a.old_actual, a.new_actual,
+               a.old_reason, a.new_reason, a.new_note, a.by_user
+        FROM audit a LEFT JOIN items i ON i.item_key = a.item_key
+        WHERE a.plan_date = :d ORDER BY a.at DESC LIMIT :n"""
+    with engine.connect() as conn:
+        return pd.read_sql(text(sql), conn, params={"d": plan_date, "n": limit})
 
 
 # ------------------------------------------------------------------ prioritas
